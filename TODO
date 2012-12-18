@@ -1,0 +1,10 @@
+polish support for write operations (create, update)
+add blobstore support
+write python API client
+write test suite using python API client
+    CRUD with ndb / blobstore
+    filter / sort / limit / offset
+    authentication / authorization
+check the accept header, and support HTML output (GET only)
+break fieldtype-specific (de-)serialization (HTML and JSON) support into it's own file
+support all stock fieldtypes (these will probably be added as I use them in an app)
