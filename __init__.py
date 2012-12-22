@@ -138,7 +138,7 @@ def BuildRoute(baseurl, models, authenticate=users.get_current_user, authorize=N
                             continue
                         field = ndb.Key(self.selectModel(parts[0]), parts[1])
                     setattr(item, fieldname, field)
-            if len(badfields) > 1:
+            if len(badfields) > 0:
                 self.abort(400, "Invalid field values: {0}".format(", ".join(badfields)))
             item.put()
             return item
