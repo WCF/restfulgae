@@ -1,4 +1,4 @@
-from google.appengine.ext import ndb
+from google.appengine.ext import db
 from google.appengine.api import users
 import operator
 import webapp2
@@ -19,14 +19,14 @@ class ReverseReferenceProperty(list):
     pass
 
 
-class LinkedKeyProperty(ndb.KeyProperty):
+class LinkedReferenceProperty(db.ReferenceProperty):
     def __init__(self, collection_name, **kwargs):
         self.collection_name = collection_name
-        super(LinkedKeyProperty, self).__init__(**kwargs)
+        super(LinkedReferenceProperty, self).__init__(**kwargs)
 
     def _fix_up(self, cls, code_name):
-        super(LinkedKeyProperty, self)._fix_up(cls, code_name)
-        modelclass = ndb.Model._kind_map[self._kind]
+        super(LinkedReferenceProperty, self)._fix_up(cls, code_name)
+        modelclass = db.Model._kind_map[self._kind]
         setattr(modelclass, self.collection_name,
                 ReverseReferenceProperty((cls, self)))
 
@@ -35,19 +35,20 @@ def BuildRoute(baseurl, models, authenticate=users.get_current_user,
                authorize=None):
     if isinstance(models, types.ModuleType):
         models = [m for m in models.__dict__.values() if isinstance(
-            m, ndb.model.MetaModel) and ndb.Model in m.__bases__]
+            m, db.model.MetaModel) and db.Model in m.__bases__]
 
     models = dict([(m.__name__, m) for m in models])
 
-    def auth(method, resource):
+    def auth(instance, method, resource):
         if authorize is not None:
             user = authenticate()
             if not authorize(user, method, resource):
-                self.abort(403)
+                instance.abort(403)
 
     class RESTHandler(webapp2.RequestHandler):
-        def abort(self, code, text=""):
-            webapp2.RequestHandler.abort(self, code, text,
+        # def abort(self, code, text=""):
+        def abort(self, code, *args, **kwargs):
+            webapp2.RequestHandler.abort(self, code, kwargs.get('text', ''),
                                          body_template="${detail}")
 
         def selectModel(self, classname):
@@ -55,7 +56,7 @@ def BuildRoute(baseurl, models, authenticate=users.get_current_user,
             return models[classname]
 
         def buildURI(self, target, collection=None):
-            if isinstance(target, ndb.Key):
+            if isinstance(target, db.Key):
                 if collection:
                     return webapp2.uri_for("rest-model-collection",
                                            modelname=target.kind(),
@@ -77,16 +78,14 @@ def BuildRoute(baseurl, models, authenticate=users.get_current_user,
                 field_class = item._properties[fieldname].__class__
                 if field is None:
                     pass
-                elif field_class is ndb.BlobProperty:
-                    field = base64.base64decode(value)
-                elif field_class is ndb.DateTimeProperty:
+                elif field_class is db.BlobProperty:
+                    field = base64.b64decode(item)
+                elif field_class is db.DateTimeProperty:
                     field = field.strftime("%Y %b %d %H:%M:%S")
-                elif field_class is ndb.DateProperty:
+                elif field_class is db.DateProperty:
                     field = field.strftime("%Y %b %d")
-                elif field_class is ndb.TimeProperty:
+                elif field_class is db.TimeProperty:
                     field = field.strftime("%H:%M:%S")
-                elif field_class is ndb.KeyProperty or field_class is LinkedKeyProperty:
-                    field = self.buildURI(field)
                 properties[fieldname] = field
             for key, val in item.__class__.__dict__.iteritems():
                 if isinstance(val, ReverseReferenceProperty):
@@ -103,58 +102,52 @@ def BuildRoute(baseurl, models, authenticate=users.get_current_user,
             for fieldname, field in put_data.iteritems():
                 if fieldname in item._properties:
                     field_class = item._properties[fieldname].__class__
-                    if field_class is ndb.IntegerProperty:
+                    if field_class is db.IntegerProperty:
                         if type(field) is not int:
                             badfields.append(fieldname)
                             continue
-                    elif field_class is ndb.FloatProperty:
+                    elif field_class is db.FloatProperty:
                         if type(field) is not float:
                             badfields.append(fieldname)
                             continue
-                    elif field_class is ndb.BooleanProperty:
+                    elif field_class is db.BooleanProperty:
                         if type(field) is not bool:
                             badfields.append(fieldname)
                             continue
-                    elif field_class is ndb.StringProperty:
+                    elif field_class is db.StringProperty:
                         if len(str(field)) > 500:
                             badfields.append(fieldname)
                             continue
-                    elif field_class is ndb.BlobProperty:
+                    elif field_class is db.BlobProperty:
                         if type(field) is not str:
                             badfields.append(fieldname)
                             continue
                         try:
-                            field = base64.base64decode(field)
+                            field = base64.b64decode(field)
                         except ValueError as e:
                             badfields.append(fieldname)
                             continue
-                    elif field_class is ndb.DateTimeProperty:
+                    elif field_class is db.DateTimeProperty:
                         try:
                             field = datetime.datetime.strptime(
                                 field, "%Y %b %d %H:%M:%S")
                         except ValueError as e:
                             badfields.append(fieldname)
                             continue
-                    elif field_class is ndb.DateProperty:
+                    elif field_class is db.DateProperty:
                         try:
                             field = datetime.datetime.strptime(
                                 field, "%Y %b %d").date()
                         except ValueError as e:
                             badfields.append(fieldname)
                             continue
-                    elif field_class is ndb.TimeProperty:
+                    elif field_class is db.TimeProperty:
                         try:
                             field = datetime.datetime.strptime(
                                 field, "%H:%M:%S").time()
                         except ValueError as e:
                             badfields.append(fieldname)
                             continue
-                    elif field_class is ndb.KeyProperty or field_class is LinkedKeyProperty:
-                        parts = field.split("/")
-                        if len(parts) > 2:
-                            badfields.append(fieldname)
-                            continue
-                        field = ndb.Key(self.selectModel(parts[0]), parts[1])
                     setattr(item, fieldname, field)
             if len(badfields) > 0:
                 self.abort(400, "Invalid field values: {0}".format(
@@ -170,10 +163,11 @@ def BuildRoute(baseurl, models, authenticate=users.get_current_user,
             return self.putItem(model(**kwargs), post_data)
 
         def deleteItems(self, model, itemlist):
-            ndb.delete_multi([i.key for i in itemlist])
+            db.delete([i.key for i in itemlist])
 
         def fieldFromString(self, modelname, fieldname):
             model = self.selectModel(modelname)
+            field = None
             try:
                 field = getattr(model, fieldname)
             except AttributeError:
@@ -189,7 +183,8 @@ def BuildRoute(baseurl, models, authenticate=users.get_current_user,
             field = self.fieldFromString(query.kind, fieldname)
             if fieldname == "key":
                 if value.isdigit(): value = int(value)
-                value = ndb.Key(query.kind, value)
+                # value = db.Key(query.kind, value)
+                value = db.Key(query.kind)
             if op in operators:
                 query = query.filter(operators[op](field, value))
             elif op == "IN":
@@ -220,7 +215,7 @@ def BuildRoute(baseurl, models, authenticate=users.get_current_user,
 
     class RESTBaseHandler(RESTHandler):
         def get(self):
-            auth("get", None)
+            auth(self, "get", None)
             site_meta = {"resources": dict(
                 [(name, self.buildURI(model)) for name, model in
                  models.iteritems()])}
@@ -233,19 +228,19 @@ def BuildRoute(baseurl, models, authenticate=users.get_current_user,
 
         def get(self, modelname):
             itemlist = self.getCollection(self.selectModel(modelname).query())
-            auth("get", itemlist)
+            auth(self, "get", itemlist)
             self.response.write(json.dumps({'results': itemlist}))
 
         def delete(self, modelname):
             model, itemlist = self._get(modelname)
-            auth("delete", itemlist)
+            auth(self, "delete", itemlist)
             self.deleteCollection(model, itemlist)
             self.abort(204)
 
         def post(self, modelname):
             post_data = json.loads(self.request.body)
             model = self.selectModel(modelname)
-            auth("post", model)
+            auth(self, "post", model)
             item = self.postItem(model, post_data)
             self.response.set_status(303)
             self.response.headers['Location'] = self.buildURI(item.key)
@@ -255,7 +250,7 @@ def BuildRoute(baseurl, models, authenticate=users.get_current_user,
             model = self.selectModel(modelname)
             if itemid.isdigit(): itemid = int(itemid)
             item = model.get_by_id(itemid)
-            auth("get", item)
+            auth(self, "get", item)
             if not item: self.abort(404)
             self.response.write(json.dumps(self.encode(item)))
 
@@ -263,7 +258,7 @@ def BuildRoute(baseurl, models, authenticate=users.get_current_user,
             model = self.selectModel(modelname)
             if itemid.isdigit(): itemid = int(itemid)
             item = model.get_by_id(itemid)
-            auth("delete", item)
+            auth(self, "delete", item)
             if not item: self.abort(404)
             self.deleteItems(model, [item])
             self.abort(204)
@@ -273,7 +268,7 @@ def BuildRoute(baseurl, models, authenticate=users.get_current_user,
             model = self.selectModel(modelname)
             if itemid.isdigit(): itemid = int(itemid)
             item = model.get_by_id(itemid)
-            auth("put", item)
+            auth(self, "put", item)
             self.putItem(item, put_data)
             self.response.set_status(303)
             self.response.headers['Location'] = self.buildURI(item.key)
@@ -283,7 +278,7 @@ def BuildRoute(baseurl, models, authenticate=users.get_current_user,
             model = self.selectModel(modelname)
             if itemid.isdigit(): itemid = int(itemid)
             item = model.get_by_id(itemid)
-            auth("get", item)
+            auth(self, "get", item)
             if not item: self.abort(404)
             try:
                 return model, self.getCollection(
@@ -293,12 +288,12 @@ def BuildRoute(baseurl, models, authenticate=users.get_current_user,
 
         def get(self, modelname, itemid, collectionname):
             model, itemlist = self._get(modelname, itemid, collectionname)
-            auth("get", itemlist)
+            auth(self, "get", itemlist)
             self.response.write(json.dumps({'results': itemlist}))
 
         def delete(self, modelname, itemid, collectionname):
             model, itemlist = self._get(modelname, itemid, collectionname)
-            auth("delete", itemlist)
+            auth(self, "delete", itemlist)
             self.deleteCollection(model, itemlist)
             self.abort(204)
 
